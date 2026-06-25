@@ -1,0 +1,14 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
+    "ANTHROPIC_AUTH_TOKEN": "sakana-fugu-proxy",
+    "ANTHROPIC_API_KEY": "",
+    "API_TIMEOUT_MS": "3000000",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "fugu-ultra",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "fugu",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "fugu",
+    "ANTHROPIC_SMALL_FAST_MODEL": "fugu",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "fugu"
+  },
+  "autoUpdatesChannel": "latest"
+}

@@ -11,7 +11,7 @@ SETTINGS = os.path.expanduser("~/.claude/settings.json")
 CURRENT_FILE = os.path.join(PROVIDERS_DIR, ".current")
 OR_MODELS_DIR = os.path.join(PROVIDERS_DIR, "openrouter-models")
 
-DISPLAY_NAMES = {"default": "Claude (Autenticado)"}
+DISPLAY_NAMES = {"default": "Claude (Autenticado)", "openai-api": "OpenAI - API"}
 PROVIDERS_WITH_MODELS = ["openrouter"]
 
 def display_name(name):
@@ -38,6 +38,48 @@ def activate_provider(name):
     shutil.copy(src, SETTINGS)
     with open(CURRENT_FILE, "w") as f:
         f.write(name)
+    CCR_ROUTERS = {
+        "sakana": {
+            "default": "sakana,fugu-ultra",
+            "background": "sakana,fugu",
+            "think": "sakana,fugu-ultra",
+            "longContext": "sakana,fugu-ultra",
+            "webSearch": "sakana,fugu"
+        },
+        "openai-api": {
+            "default": "openai,gpt-4.1",
+            "background": "openai,gpt-4.1-mini",
+            "think": "openai,gpt-4o",
+            "longContext": "openai,gpt-4.1",
+            "webSearch": "openai,gpt-4.1"
+        }
+    }
+    if name in CCR_ROUTERS:
+        update_ccr_router(CCR_ROUTERS[name])
+        ensure_ccr_running()
+
+def update_ccr_router(router):
+    ccr_config_path = os.path.expanduser("~/.claude-code-router/config.json")
+    try:
+        with open(ccr_config_path) as f:
+            config = json.load(f)
+        config["Router"] = router
+        with open(ccr_config_path, "w") as f:
+            json.dump(config, f, indent=2)
+    except Exception:
+        pass
+
+def ensure_ccr_running():
+    import subprocess
+    ccr = shutil.which("ccr")
+    if not ccr:
+        print("\n  Aviso: 'ccr' não encontrado. Instale com: npm install -g @musistudio/claude-code-router")
+        return
+    result = subprocess.run([ccr, "status"], capture_output=True, text=True)
+    if "Running" not in result.stdout:
+        subprocess.run([ccr, "restart"], capture_output=True)
+    else:
+        subprocess.run([ccr, "restart"], capture_output=True)
 
 # ── OpenRouter models ──────────────────────────────────────────────────────────
 
