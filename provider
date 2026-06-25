@@ -27,33 +27,40 @@ def list_providers():
     files = sorted(f[:-5] for f in os.listdir(PROVIDERS_DIR) if f.endswith(".json"))
     return files
 
+CCR_ROUTERS = {
+    "sakana": {
+        "default": "sakana,fugu-ultra",
+        "background": "sakana,fugu",
+        "think": "sakana,fugu-ultra",
+        "longContext": "sakana,fugu-ultra",
+        "webSearch": "sakana,fugu"
+    },
+}
+
+PLACEHOLDER_TOKENS = {"", "<SUBSTITUA PELO SEU TOKEN>", "sakana-fugu-proxy"}
+
 def activate_provider(name):
     src = os.path.join(PROVIDERS_DIR, f"{name}.json")
     try:
         with open(src) as f:
-            json.load(f)
+            config = json.load(f)
     except json.JSONDecodeError as e:
         print(f"\n  Erro: o arquivo '{name}.json' tem JSON inválido: {e}")
         sys.exit(1)
-    shutil.copy(src, SETTINGS)
+
+    if name == "sakana":
+        real_key = config.get("env", {}).get("ANTHROPIC_AUTH_TOKEN", "")
+        if real_key not in PLACEHOLDER_TOKENS:
+            update_ccr_api_key("sakana", real_key)
+            config["env"]["ANTHROPIC_AUTH_TOKEN"] = "sakana-fugu-proxy"
+        with open(SETTINGS, "w") as f:
+            json.dump(config, f, indent=2)
+    else:
+        shutil.copy(src, SETTINGS)
+
     with open(CURRENT_FILE, "w") as f:
         f.write(name)
-    CCR_ROUTERS = {
-        "sakana": {
-            "default": "sakana,fugu-ultra",
-            "background": "sakana,fugu",
-            "think": "sakana,fugu-ultra",
-            "longContext": "sakana,fugu-ultra",
-            "webSearch": "sakana,fugu"
-        },
-        "openai-api": {
-            "default": "openai,gpt-4.1",
-            "background": "openai,gpt-4.1-mini",
-            "think": "openai,gpt-4o",
-            "longContext": "openai,gpt-4.1",
-            "webSearch": "openai,gpt-4.1"
-        }
-    }
+
     if name in CCR_ROUTERS:
         update_ccr_router(CCR_ROUTERS[name])
         ensure_ccr_running()
@@ -64,6 +71,20 @@ def update_ccr_router(router):
         with open(ccr_config_path) as f:
             config = json.load(f)
         config["Router"] = router
+        with open(ccr_config_path, "w") as f:
+            json.dump(config, f, indent=2)
+    except Exception:
+        pass
+
+def update_ccr_api_key(provider_name, api_key):
+    ccr_config_path = os.path.expanduser("~/.claude-code-router/config.json")
+    try:
+        with open(ccr_config_path) as f:
+            config = json.load(f)
+        for p in config.get("Providers", []):
+            if p.get("name") == provider_name:
+                p["api_key"] = api_key
+                break
         with open(ccr_config_path, "w") as f:
             json.dump(config, f, indent=2)
     except Exception:
