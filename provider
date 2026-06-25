@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import json
+import curses
+import shutil
+
+PROVIDERS_DIR = os.path.expanduser("~/.claude/providers")
+SETTINGS = os.path.expanduser("~/.claude/settings.json")
+CURRENT_FILE = os.path.join(PROVIDERS_DIR, ".current")
+OR_MODELS_DIR = os.path.join(PROVIDERS_DIR, "openrouter-models")
+
+DISPLAY_NAMES = {"default": "Claude (Autenticado)"}
+PROVIDERS_WITH_MODELS = ["openrouter"]
+
+def display_name(name):
+    return DISPLAY_NAMES.get(name, name)
+
+def current_provider():
+    try:
+        return open(CURRENT_FILE).read().strip()
+    except:
+        return "desconhecido"
+
+def list_providers():
+    files = sorted(f[:-5] for f in os.listdir(PROVIDERS_DIR) if f.endswith(".json"))
+    return files
+
+def activate_provider(name):
+    src = os.path.join(PROVIDERS_DIR, f"{name}.json")
+    try:
+        with open(src) as f:
+            json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"\n  Erro: o arquivo '{name}.json' tem JSON inválido: {e}")
+        sys.exit(1)
+    shutil.copy(src, SETTINGS)
+    with open(CURRENT_FILE, "w") as f:
+        f.write(name)
+
+# ── OpenRouter models ──────────────────────────────────────────────────────────
+
+def list_or_models():
+    os.makedirs(OR_MODELS_DIR, exist_ok=True)
+    files = sorted(f[:-5] for f in os.listdir(OR_MODELS_DIR) if f.endswith(".json"))
+    return files
+
+def load_or_model(slug):
+    with open(os.path.join(OR_MODELS_DIR, f"{slug}.json")) as f:
+        return json.load(f)
+
+def save_or_model(slug, data):
+    os.makedirs(OR_MODELS_DIR, exist_ok=True)
+    with open(os.path.join(OR_MODELS_DIR, f"{slug}.json"), "w") as f:
+        json.dump(data, f, indent=2)
+
+def activate_or_model(slug):
+    base_path = os.path.join(PROVIDERS_DIR, "openrouter.json")
+    with open(base_path) as f:
+        config = json.load(f)
+    model_data = load_or_model(slug)
+    model_id = model_data["model_id"]
+    config["env"]["ANTHROPIC_MODEL"] = model_id
+    config["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model_id
+    config["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model_id
+    config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model_id
+    with open(SETTINGS, "w") as f:
+        json.dump(config, f, indent=2)
+    with open(CURRENT_FILE, "w") as f:
+        f.write(f"openrouter/{slug}")
+
+def current_or_model():
+    cur = current_provider()
+    if cur.startswith("openrouter/"):
+        return cur.split("/", 1)[1]
+    return None
+
+# ── Generic submenu ────────────────────────────────────────────────────────────
+
+def generic_menu(stdscr, title, items, current_mark=None):
+    internal = items + ["← Voltar"]
+    display = items + ["───────────────", "← Voltar"]
+    selectable = [i for i, x in enumerate(display) if not x.startswith("───")]
+    selected = 0
+
+    while True:
+        stdscr.clear()
+        curses.curs_set(0)
+        h, w = stdscr.getmaxyx()
+
+        stdscr.addstr(1, 2, title, curses.color_pair(2) | curses.A_BOLD)
+        stdscr.addstr(2, 2, "─" * 36, curses.A_DIM)
+
+        for i, item in enumerate(display):
+            y = 3 + i
+            if y >= h - 2:
+                break
+            if item.startswith("───"):
+                stdscr.addstr(y, 2, item, curses.A_DIM)
+                continue
+            if i == selected:
+                stdscr.addstr(y, 2, f"▶ {item}", curses.color_pair(1) | curses.A_BOLD)
+            elif item == current_mark:
+                stdscr.addstr(y, 2, f"  {item} ✓", curses.color_pair(3))
+            else:
+                stdscr.addstr(y, 2, f"  {item}")
+
+        stdscr.addstr(h - 1, 2, "↑↓ navegar   Enter confirmar   q voltar", curses.A_DIM)
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            idx = selectable.index(selected) if selected in selectable else 0
+            selected = selectable[(idx - 1) % len(selectable)]
+        elif key == curses.KEY_DOWN:
+            idx = selectable.index(selected) if selected in selectable else 0
+            selected = selectable[(idx + 1) % len(selectable)]
+        elif key in (curses.KEY_ENTER, 10, 13):
+            choice = internal[selected]
+            return None if choice == "← Voltar" else choice
+        elif key in (ord('q'), ord('Q')):
+            return None
+
+def confirm_screen(stdscr, message):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    stdscr.addstr(1, 2, "Confirmar", curses.color_pair(2) | curses.A_BOLD)
+    stdscr.addstr(2, 2, "─" * 32, curses.A_DIM)
+    stdscr.addstr(4, 2, message, curses.A_BOLD)
+    stdscr.addstr(6, 2, "  s  Sim")
+    stdscr.addstr(7, 2, "  n  Não")
+    stdscr.addstr(h - 1, 2, "s confirmar   n cancelar", curses.A_DIM)
+    stdscr.refresh()
+    return stdscr.getch() in (ord('s'), ord('S'))
+
+# ── OpenRouter model manager ───────────────────────────────────────────────────
+
+def openrouter_menu(stdscr):
+    while True:
+        models = list_or_models()
+        cur_model = current_or_model()
+
+        actions = ["───────────────", "+ Adicionar modelo", "✎ Editar modelo", "✗ Excluir modelo", "← Voltar"]
+        display_items = models + actions
+        internal_items = models + ["───────────────", "+ Adicionar modelo", "✎ Editar modelo", "✗ Excluir modelo", "← Voltar"]
+        selectable = [i for i, x in enumerate(display_items) if not x.startswith("───")]
+        selected = 0
+
+        while True:
+            stdscr.clear()
+            curses.curs_set(0)
+            h, w = stdscr.getmaxyx()
+
+            stdscr.addstr(1, 2, "⚡ OpenRouter — Modelos", curses.color_pair(2) | curses.A_BOLD)
+            if cur_model:
+                stdscr.addstr(2, 2, f"Ativo: {cur_model}", curses.A_DIM)
+            stdscr.addstr(3, 2, "─" * 36, curses.A_DIM)
+
+            for i, item in enumerate(display_items):
+                y = 4 + i
+                if y >= h - 2:
+                    break
+                if item.startswith("───"):
+                    stdscr.addstr(y, 2, item, curses.A_DIM)
+                    continue
+                label = item
+                if item in models:
+                    try:
+                        data = load_or_model(item)
+                        label = f"{item}  [{data['model_id']}]"
+                    except:
+                        pass
+                if i == selected:
+                    stdscr.addstr(y, 2, f"▶ {label}", curses.color_pair(1) | curses.A_BOLD)
+                elif item == cur_model:
+                    stdscr.addstr(y, 2, f"  {label} ✓", curses.color_pair(3))
+                else:
+                    stdscr.addstr(y, 2, f"  {label}")
+
+            stdscr.addstr(h - 1, 2, "↑↓ navegar   Enter confirmar   q voltar", curses.A_DIM)
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key == curses.KEY_UP:
+                idx = selectable.index(selected) if selected in selectable else 0
+                selected = selectable[(idx - 1) % len(selectable)]
+            elif key == curses.KEY_DOWN:
+                idx = selectable.index(selected) if selected in selectable else 0
+                selected = selectable[(idx + 1) % len(selectable)]
+            elif key in (curses.KEY_ENTER, 10, 13):
+                choice = internal_items[selected]
+
+                if choice == "← Voltar":
+                    return None, None
+
+                elif choice == "+ Adicionar modelo":
+                    curses.endwin()
+                    print("\n  Adicionar modelo ao OpenRouter")
+                    model_id = input("  ID do modelo (ex: deepseek/deepseek-chat): ").strip()
+                    if not model_id:
+                        return None, None
+                    slug = model_id.replace("/", "-").replace(" ", "-")
+                    save_or_model(slug, {"model_id": model_id})
+                    print(f"  ✓ Modelo '{slug}' salvo.")
+                    break
+
+                elif choice == "✎ Editar modelo":
+                    if not models:
+                        break
+                    slug = generic_menu(stdscr, "✎ Editar — escolha o modelo", models)
+                    if slug:
+                        try:
+                            data = load_or_model(slug)
+                        except:
+                            data = {"model_id": ""}
+                        curses.endwin()
+                        print(f"\n  Editar modelo '{slug}'")
+                        print(f"  ID atual: {data.get('model_id', '')}")
+                        new_id = input("  Novo ID (Enter para manter): ").strip()
+                        if new_id:
+                            data["model_id"] = new_id
+                            save_or_model(slug, data)
+                            print(f"  ✓ Modelo '{slug}' atualizado.")
+                        return None, None
+
+                elif choice == "✗ Excluir modelo":
+                    if not models:
+                        break
+                    slug = generic_menu(stdscr, "✗ Excluir — escolha o modelo", models)
+                    if slug and confirm_screen(stdscr, f"Excluir modelo '{slug}'?"):
+                        os.remove(os.path.join(OR_MODELS_DIR, f"{slug}.json"))
+                    break
+
+                else:
+                    activate_or_model(choice)
+                    return "activated", f"openrouter → {choice}"
+
+            elif key in (ord('q'), ord('Q')):
+                return None, None
+
+# ── Provider picker ────────────────────────────────────────────────────────────
+
+def pick_provider(stdscr, title, exclude=None):
+    providers = [p for p in list_providers() if p != exclude]
+    internal_names = providers + ["← Voltar"]
+    items = [display_name(p) for p in providers] + ["───────────────", "← Voltar"]
+    selectable = [i for i, x in enumerate(items) if not x.startswith("───")]
+    selected = 0
+
+    while True:
+        stdscr.clear()
+        curses.curs_set(0)
+        h, w = stdscr.getmaxyx()
+
+        stdscr.addstr(1, 2, title, curses.color_pair(2) | curses.A_BOLD)
+        stdscr.addstr(2, 2, "─" * 32, curses.A_DIM)
+
+        for i, item in enumerate(items):
+            y = 3 + i
+            if y >= h - 2:
+                break
+            if item.startswith("───"):
+                stdscr.addstr(y, 2, item, curses.A_DIM)
+                continue
+            if i == selected:
+                stdscr.addstr(y, 2, f"▶ {item}", curses.color_pair(1) | curses.A_BOLD)
+            else:
+                stdscr.addstr(y, 2, f"  {item}")
+
+        stdscr.addstr(h - 1, 2, "↑↓ navegar   Enter confirmar   q voltar", curses.A_DIM)
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            idx = selectable.index(selected) if selected in selectable else 0
+            selected = selectable[(idx - 1) % len(selectable)]
+        elif key == curses.KEY_DOWN:
+            idx = selectable.index(selected) if selected in selectable else 0
+            selected = selectable[(idx + 1) % len(selectable)]
+        elif key in (curses.KEY_ENTER, 10, 13):
+            choice = internal_names[selected]
+            return None if choice == "← Voltar" else choice
+        elif key in (ord('q'), ord('Q')):
+            return None
+
+# ── Main menu ──────────────────────────────────────────────────────────────────
+
+def draw_menu(stdscr, providers, selected):
+    stdscr.clear()
+    curses.start_color()
+    curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)
+    curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
+    curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+    curses.curs_set(0)
+
+    current = current_provider()
+    h, w = stdscr.getmaxyx()
+
+    stdscr.addstr(1, 2, "⚡ Provider Manager — Claude Code", curses.color_pair(2) | curses.A_BOLD)
+    cur_display = current.replace("openrouter/", "openrouter → ") if current.startswith("openrouter/") else display_name(current)
+    stdscr.addstr(2, 2, f"Ativo: {cur_display}", curses.A_DIM)
+    stdscr.addstr(3, 2, "─" * 36, curses.A_DIM)
+
+    all_items = providers + ["───────────────", "+ Novo provider", "✎ Editar provider", "✗ Excluir provider", "↩ Restaurar original", "✕ Sair"]
+
+    for i, item in enumerate(all_items):
+        y = 4 + i
+        if y >= h - 2:
+            break
+        if item.startswith("───"):
+            stdscr.addstr(y, 2, item, curses.A_DIM)
+            continue
+        label = display_name(item)
+        is_active = (item == current) or (item == "openrouter" and current.startswith("openrouter/"))
+        if item in PROVIDERS_WITH_MODELS:
+            label += "  ▸"
+        if i == selected:
+            stdscr.addstr(y, 2, f"▶ {label}", curses.color_pair(1) | curses.A_BOLD)
+        elif is_active:
+            stdscr.addstr(y, 2, f"  {label} ✓", curses.color_pair(3))
+        else:
+            stdscr.addstr(y, 2, f"  {label}")
+
+    stdscr.addstr(h - 1, 2, "↑↓ navegar   Enter confirmar   q sair", curses.A_DIM)
+    stdscr.refresh()
+    return all_items
+
+def run_menu(stdscr):
+    providers = list_providers()
+    selected = 0
+
+    while True:
+        all_items = draw_menu(stdscr, providers, selected)
+        selectable = [i for i, x in enumerate(all_items) if not x.startswith("───")]
+
+        key = stdscr.getch()
+
+        if key == curses.KEY_UP:
+            idx = selectable.index(selected) if selected in selectable else 0
+            selected = selectable[(idx - 1) % len(selectable)]
+        elif key == curses.KEY_DOWN:
+            idx = selectable.index(selected) if selected in selectable else 0
+            selected = selectable[(idx + 1) % len(selectable)]
+        elif key in (curses.KEY_ENTER, 10, 13):
+            choice = all_items[selected]
+
+            if choice == "✕ Sair":
+                return None, None
+
+            elif choice == "↩ Restaurar original":
+                activate_provider("default")
+                return "activated", "Claude (Autenticado)"
+
+            elif choice == "+ Novo provider":
+                curses.endwin()
+                name = input("\n  Nome do novo provider: ").strip()
+                if not name:
+                    return None, None
+                filepath = os.path.join(PROVIDERS_DIR, f"{name}.json")
+                if not os.path.exists(filepath):
+                    template = {
+                        "env": {
+                            "ANTHROPIC_BASE_URL": "",
+                            "ANTHROPIC_AUTH_TOKEN": "",
+                            "ANTHROPIC_API_KEY": "",
+                            "API_TIMEOUT_MS": "3000000",
+                            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                            "ANTHROPIC_MODEL": "",
+                            "ANTHROPIC_DEFAULT_SONNET_MODEL": "",
+                            "ANTHROPIC_DEFAULT_OPUS_MODEL": "",
+                            "ANTHROPIC_DEFAULT_HAIKU_MODEL": ""
+                        },
+                        "autoUpdatesChannel": "latest"
+                    }
+                    with open(filepath, "w") as f:
+                        json.dump(template, f, indent=2)
+                os.system(f"${{EDITOR:-nano}} {filepath}")
+                return None, None
+
+            elif choice == "✎ Editar provider":
+                name = pick_provider(stdscr, "✎ Escolha o provider para editar", exclude="default")
+                if name:
+                    curses.endwin()
+                    filepath = os.path.join(PROVIDERS_DIR, f"{name}.json")
+                    os.system(f"${{EDITOR:-nano}} {filepath}")
+                    return None, None
+
+            elif choice == "✗ Excluir provider":
+                name = pick_provider(stdscr, "✗ Escolha o provider para excluir", exclude="default")
+                if name and confirm_screen(stdscr, f"Excluir '{display_name(name)}'?"):
+                    os.remove(os.path.join(PROVIDERS_DIR, f"{name}.json"))
+                    if current_provider() == name:
+                        activate_provider("default")
+                    providers = list_providers()
+                    selected = 0
+
+            elif choice in PROVIDERS_WITH_MODELS:
+                result, name = openrouter_menu(stdscr)
+                if result == "activated":
+                    return result, name
+
+            else:
+                activate_provider(choice)
+                return "activated", display_name(choice)
+
+        elif key in (ord('q'), ord('Q')):
+            return None, None
+
+# ── CLI & entry point ──────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+        if cmd == "list":
+            for p in list_providers():
+                marker = " ✓" if p == current_provider() else ""
+                print(f"  {p}{marker}")
+        elif cmd == "current":
+            print(f"Provider ativo: {current_provider()}")
+        elif cmd == "reset":
+            activate_provider("default")
+            print("✓ Restaurado. Reinicie o Claude Code.")
+        elif cmd == "edit" and len(sys.argv) > 2:
+            os.system(f"${{EDITOR:-nano}} {PROVIDERS_DIR}/{sys.argv[2]}.json")
+        else:
+            filepath = os.path.join(PROVIDERS_DIR, f"{cmd}.json")
+            if os.path.exists(filepath):
+                activate_provider(cmd)
+                print(f"✓ Provider '{cmd}' ativado. Reinicie o Claude Code.")
+            else:
+                print(f"Provider '{cmd}' não encontrado.")
+        return
+
+    result, name = curses.wrapper(run_menu)
+    if result == "activated":
+        print(f"\n  ✓ '{name}' ativado. Reinicie o Claude Code para aplicar.\n")
+
+if __name__ == "__main__":
+    main()

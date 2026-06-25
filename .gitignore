@@ -1,0 +1,4 @@
+# Nunca commitar arquivos com chaves pessoais
+providers/.current
+*.bak
+.DS_Store
