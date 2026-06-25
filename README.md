@@ -6,7 +6,7 @@ Gerenciador interativo de providers de LLM para o **Claude Code**. Troque entre 
 
 ## 🎥 Demo
 
-https://github.com/AndersonHaas/switch-llm/assets/demo.mp4
+https://github.com/AndersonHaas/switch-llm/raw/main/demo.mp4
 
 ---
 
